@@ -1,0 +1,3 @@
+OBJECTID *,Shape *,RID,MEAS,Distance,Name,Lat,Long,LLID,River Mile,River Kilometer,Snapped Latitude,Snapped Longitude,Label,YearInstalled,Angle,SmallScaleAngle,Type
+19,Point M,1.23E+12,35751.5104,0,Coweeman RB Weir,46.130736,-122.846606,1.23E+12,6.77,10.89709,46.130736,-122.846606,2011 & 2017,2011,325,<Null>,Resistence Board Weir
+36,Point M,1.23E+12,<Null>,<Null>,Coweeman RB Weir,46.138971,-122.863781,1.23E+12,5,<Null>,<Null>,<Null>,<Null>,2016,135,90,Resistence Board Weir

@@ -1,0 +1,274 @@
+---
+title: "Coweeman Fall Chinook Redd Distribution - Weir Impacts"
+author: "Jeremy Wilson & Thomas Buehrens"
+output:
+  html_document:
+    fig_caption: yes
+    theme: cerulean
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+***
+
+Page Last Updated: `r format(Sys.time(), '%m/%d/%Y')`.
+
+***
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load Packages
+This section of code will load the packages we need to complete the analysis##
+```{r load packages, results = "hide",echo = T, message = FALSE, warning = FALSE}
+
+# List of required packages
+packages <- c("tidyverse", "BTSPAS", "dplyr", "lubridate", "tidyr", "scales", "RODBC", "MuMIn", 
+              "boot", "RColorBrewer", "reshape2", "ggplot2", "gplots", "plyr", "mgcv", "sjPlot", 
+              "sjmisc", "gridExtra", "ggfortify", "quantreg", "splines", "modelr", "kableExtra", 
+              "dataRetrieval", "ggsci", "purrr")
+
+# Function to check and install packages
+check_and_install <- function(package) {
+  if (!require(package, character.only = TRUE)) {
+    install.packages(package)
+    library(package, character.only = TRUE)}}
+
+# Apply the function to the list of packages
+invisible(sapply(packages, check_and_install))
+
+```
+
+# Load and Organize Data
+```{r load data, results = "hide",echo = T, message = FALSE, warning = FALSE }
+# Load Coweeman Fall Chinook Redd data (2003-2005,2008-2017) to get date 21d before to match w/ flow data
+DF1<-read.csv("Data/Cow_Redds.csv")%>%
+  as_tibble()%>%
+  mutate(Date = as.Date(Date_New, "%m/%d/%Y"))%>%
+  filter(!is.na(Date))%>%
+  distinct(Date)%>%
+  dplyr::mutate(
+    Redd_Date = ymd(Date),
+    Start_Date = Redd_Date - 21,
+    End_Date = Redd_Date
+  ) %>%
+  transmute(
+    Redd_Date,
+    Date = map2(Start_Date, End_Date, seq, by = 'day')
+  ) %>%
+  unnest(cols = c(Date))
+
+#---------------------------------------------------------------------------------------------------
+# Function to get USGS flow data
+get_USGS_data<-function(flow_site,flow_params,daily_or_instantaneous,begin_date,end_date){
+  flow_params_lookup<-tibble(flow_params=c("discharge","stage_height"),
+                             param_codes=c("00060","00065"))%>%
+    right_join(tibble("flow_params"=flow_params))%>%
+    dplyr::select(param_codes)%>%
+    as.vector()%>%
+    unlist()
+  
+  names_lookup_daily<-c("Date" = "date","Flow" ="flow_cfs","GH" ="stage_height")
+  names_lookup_inst<-c("Date" ="date","Flow_Inst"="flow_cfs","GH_Inst" ="stage_height" )                    
+  
+  if(daily_or_instantaneous=="daily"){
+    tdat<- readNWISdv(siteNumber=flow_site,
+                      parameterCd = flow_params_lookup, 
+                      startDate = begin_date,
+                      endDate = end_date, 
+                      statCd = "00003")%>%
+      renameNWISColumns()%>%
+      as_tibble()%>%
+      rename_with(.fn = ~names_lookup_daily[.x], .cols = intersect(names(.), names(names_lookup_daily)))
+  }else{
+    tdat <- readNWISuv(siteNumber = flow_site,
+                       parameterCd = flow_params_lookup,
+                       startDate =begin_date,
+                       endDate = end_date)%>%
+      renameNWISColumns()%>%
+      as_tibble()%>%
+      rename_with(.fn = ~names_lookup_inst[.x], .cols = intersect(names(.), names(names_lookup_inst)))
+  }
+  return(tdat)
+}
+#---------------------------------------------------------------------------------------------------
+# Get flow data
+DF2<-get_USGS_data(flow_site=14222500,flow_params="discharge",daily_or_instantaneous="daily",
+                    begin_date="2003-08-01",end_date="2017-12-31")%>%
+   as_tibble()%>%
+   dplyr::select(date,flow_cfs)%>%
+   dplyr::rename(Q = flow_cfs)%>%
+   dplyr::mutate(Date = as.Date(date, format = "%m/%d/%Y"))
+
+# Join 2 dataframes to get needed flow data match with proper date
+DF3<-left_join(DF1,DF2,by="Date")%>%
+   dplyr::group_by(Redd_Date)%>%
+   dplyr::summarise(mean_Q_21d_prior=round(mean(Q),0),min_Q_21d_prior=round(min(Q),0),
+                    max_Q_21d_prior=round(max(Q),0))
+
+# Load complete Coweeman Fall Chinook Redd data (2003-2005,2008-2017)
+DF4<-read.csv("Data/Cow_Redds.csv")%>%
+   as_tibble()%>%
+   dplyr::filter(!is.na(Date_New))%>%
+   dplyr::rename(Redd_Date = Date_New)%>%
+   dplyr::mutate(Redd_Date = as.Date(Redd_Date, format = "%m/%d/%Y"))
+
+# Join 2 dataframes to get flow data paired with complete redd data
+DF5<-left_join(DF4,DF3,by="Redd_Date")%>%
+   dplyr::mutate(Weir = ifelse(Year>2010,1,0),.before="Redd_Count")%>%
+   dplyr::mutate(Trib = ifelse(Stream=="Coweeman River",0,1),.before="Redd_Count")
+   
+# Load Coweeman Abundance, pHOS, and Weir eff data (2003-2005,2008-2017)
+DF6<-read.csv("Data/Coweeman_Abund_pHOS_Weff.csv")%>%
+   as_tibble()%>%
+   dplyr::mutate(N=Median_N)%>%
+   dplyr::mutate(pHOS=Median_pHOS)%>%
+   dplyr::mutate(Weff=Median_Weff)%>%
+   dplyr::select(Year,N,pHOS,Weff)
+
+# Join 2 dataframes and develop redd location for redds in tribs of Coweeman (rm in trib + rm of where trib enters Coweeman) then 
+# convert all to km from miles
+DF<-left_join(DF5,DF6,by="Year")%>%
+      dplyr::mutate(Redd_DOY=as.numeric(format(as.Date(Redd_Date,"%m/%d/%Y"),"%j")),.after="Redd_Date")%>%
+      dplyr::mutate(Final_rm=ifelse(Stream=="Baird Creek",(rm+25.8),
+                             ifelse(Stream=="Goble Creek",(rm+11.0),
+                             ifelse(Stream=="Mulholland Creek",(rm+18.3),
+                             ifelse(Stream=="NF Goble Creek",(rm+12.7),
+                             ifelse(Stream=="SF Goble Creek",(rm+15.0),rm))))),.after="rkm")%>%
+      dplyr::mutate(Final_rkm=Final_rm*1.60934,.after="Final_rm")%>%
+      dplyr::select(-Meas)
+
+# scale weir efficiency
+DF<-DF%>%
+     mutate(Weff = ifelse(is.na(Weff),0,scale(Weff)))
+
+```
+
+# Quantile Regression Analysis of Factors Affecting Redd Distribution
+```{r GAM analysis, results="asis",echo = T, message = FALSE, warning = FALSE }
+
+# quantile regression model
+rq.1 <- rq(Final_rkm~
+               #Biological
+               bs(Redd_DOY, knots=quantile(Redd_DOY, prob=c(0.2,0.4,0.6,0.8)), Boundary.knots=extendrange(Redd_DOY, f=0.05)) +
+               bs(Year,knots=quantile(Year, prob=c(0.2, 0.4, 0.6, 0.8)) , Boundary.knots=extendrange(Year, f=0.05)) + 
+               scale(log(min_Q_21d_prior)) + 
+               scale(log(N)) + 
+               #Weir Effect
+               as.factor(Weir)
+               , data = DF, tau = c(0.05,0.1,0.25,0.5,0.75,0.9,0.95))
+
+# Summary and capture output
+summary_txt <- capture.output(summary(rq.1))
+writeLines(summary_txt, "rq_summary.txt")
+
+#Plot model outputs
+plot(summary(rq.1)) 
+plot(summary(rq.1),parm=c(2:8))#Redd DOY
+plot(summary(rq.1),parm=9:15)  #Year
+plot(summary(rq.1),parm=16)    #Flow
+plot(summary(rq.1),parm=17)    #Abundance
+plot(summary(rq.1),parm=18)    #Weir
+```
+
+# Develop Predictions and Plot
+```{r prediction, results = "hide",echo = T, message = FALSE, warning = FALSE }
+# Make predictions based on model
+newdat<-expand.grid(Redd_DOY=quantile(DF$Redd_DOY,probs=seq(0.1,.9,0.1)),
+                    Year=sort(unique(DF$Year)),
+                    min_Q_21d_prior = quantile(DF$min_Q_21d_prior,probs=seq(0.1,0.9,0.1)),
+                    N = quantile(DF$N,probs=seq(0.1,0.9,0.1)),
+                    Weir = c(0,1)
+)
+
+preds2<-newdat%>%
+     as_tibble()%>%
+     add_predictions(rq.1)
+
+preds2<-as_tibble(preds2$pred)%>%
+     dplyr::rename(q05=`tau= 0.05`,
+                   q10=`tau= 0.10`,
+                   q25=`tau= 0.25`,
+                   q50=`tau= 0.50`,
+                   q75=`tau= 0.75`,
+                   q90=`tau= 0.90`,
+                   q95=`tau= 0.95`,
+                   )%>%
+     dplyr::select("q05","q10","q25","q50","q75","q90","q95")
+
+newdat<-newdat%>%
+     bind_cols(preds2)%>%
+     as_tibble()%>%
+     pivot_longer(cols=c("q05","q10","q25","q50","q75","q90","q95"),names_to = "quantiles",values_to = "RKM")
+
+#---------------------------------------------------------------------------------------------------
+# Prediction plots
+ggplot(newdat%>%
+            filter(Year==median(Year),
+                   min_Q_21d_prior == median(min_Q_21d_prior),
+                   N == median(N)
+                   )
+       , aes(x=Redd_DOY,y=RKM,color=as.factor(Weir)),groups=quantiles)+
+      scale_color_lancet (name="Weir Installed",labels=c("No","Yes"))+
+      geom_line(size=0.8)+
+      facet_wrap(~quantiles)+
+      ylab("Predicted RKM")+
+      xlab("Redd DOY")+
+      labs(title = "Effect of DOY - Controlling for Year, Flow, Abundance") +  
+      theme_bw()+
+      theme(strip.background = element_rect(color="black",fill="white"))+
+      theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+ggplot(newdat%>%
+            filter(Redd_DOY==median(Redd_DOY),
+                   min_Q_21d_prior == median(min_Q_21d_prior),
+                   N == median(N)
+                   )
+       , aes(x=Year,y=RKM,color=as.factor(Weir)),groups=quantiles)+
+      geom_line(size=0.8)+
+      scale_color_lancet (name="Weir Installed",labels=c("No","Yes"))+
+      facet_wrap(~quantiles)+
+      ylab("Predicted RKM")+
+      xlab("Year")+
+      labs(title = "Effect of Year - Controlling for DOY, Flow, Abundance") +  
+      theme_bw()+
+      theme(strip.background = element_rect(color="black",fill="white"))+
+      theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+ggplot(newdat%>%
+            filter(Year==median(Year),
+                   Redd_DOY==median(Redd_DOY),
+                   N == median(N)
+                   )
+       , aes(x=min_Q_21d_prior,y=RKM,color=as.factor(Weir)),groups=quantiles)+
+      geom_line(size=0.8)+
+      scale_color_lancet (name="Weir Installed",labels=c("No","Yes"))+
+      facet_wrap(~quantiles)+
+      ylab("Predicted RKM")+
+      xlab("Q (cfs)")+
+      labs(title = "Effect of Flow - Controlling for Year, DOY, Abundance") +  
+      theme_bw()+
+      theme(strip.background = element_rect(color="black",fill="white"))+
+      theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+ggplot(newdat%>%
+            filter(Year==median(Year),
+                   Redd_DOY==median(Redd_DOY),
+                   min_Q_21d_prior == median(min_Q_21d_prior)
+                   )
+       , aes(x=N,y=RKM,color=as.factor(Weir)),groups=quantiles)+
+      geom_line(size=0.8)+
+      scale_color_lancet (name="Weir Installed",labels=c("No","Yes"))+
+      facet_wrap(~quantiles)+
+      ylab("Predicted RKM")+
+      xlab("Abundance")+
+      labs(title = "Effect of Abundance - Controlling for Year, DOY, Flow") +  
+      theme_bw()+
+      theme(strip.background = element_rect(color="black",fill="white"))+
+      theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+```
